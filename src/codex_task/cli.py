@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
 from importlib.resources import files
 from pathlib import Path
@@ -149,7 +150,7 @@ def _last_event_type(run_dir: Path) -> str | None:
 
 
 def _run(root: Path, tasks: list[Task], config: dict, max_tasks: int | None, only: str | None,
-         ready_path: Path | None = None) -> int:
+         ready_path: Path | None = None, dangerous: bool = False) -> int:
     if max_tasks is not None and max_tasks <= 0:
         raise PlanError("--max-tasks must be positive")
     by_key = {task.key: task for task in tasks}
@@ -160,6 +161,8 @@ def _run(root: Path, tasks: list[Task], config: dict, max_tasks: int | None, onl
         try:
             if ready_path is not None:
                 ready_path.touch()
+            print("codex permissions: " + ("dangerous (no approvals or sandbox)" if dangerous else config["sandbox"]),
+                  flush=True)
             launched = 0
             while max_tasks is None or launched < max_tasks:
                 rows = state.rows()
@@ -179,13 +182,16 @@ def _run(root: Path, tasks: list[Task], config: dict, max_tasks: int | None, onl
                 attempt_id = state.start(task, run_dir)
                 print(f"running {task.key}", flush=True)
                 try:
-                    status, summary, exit_code, result, checks = execute(root, task, config, run_dir, stream_output=True)
+                    status, summary, exit_code, result, checks = execute(root, task, config, run_dir,
+                                                                         stream_output=True, dangerous=dangerous)
                 except KeyboardInterrupt:
                     state.finish(attempt_id, task, "interrupted", "interrupted by user", None, None, [])
                     print(f"interrupted {task.key}", file=sys.stderr)
                     return 130
                 except Exception as exc:
-                    status, summary, exit_code, result, checks = "failed", f"runner error: {exc}", None, None, []
+                    run_dir.mkdir(parents=True, exist_ok=True)
+                    (run_dir / "runner-error.log").write_text(traceback.format_exc(), encoding="utf-8")
+                    status, summary, exit_code, result, checks = "failed", f"runner error: {exc}; see runner-error.log", None, None, []
                 state.finish(attempt_id, task, status, summary, exit_code, result, checks, _session_id(run_dir))
                 print(f"{task.key}: {status} — {summary}", flush=True)
                 launched += 1
@@ -198,7 +204,8 @@ def _run(root: Path, tasks: list[Task], config: dict, max_tasks: int | None, onl
             state.close()
 
 
-def _run_background(root: Path, tasks: list[Task], max_tasks: int | None, only: str | None) -> int:
+def _run_background(root: Path, tasks: list[Task], max_tasks: int | None, only: str | None,
+                    dangerous: bool = False) -> int:
     if max_tasks is not None and max_tasks <= 0:
         raise PlanError("--max-tasks must be positive")
     if only and only not in {task.key for task in tasks}:
@@ -216,6 +223,8 @@ def _run_background(root: Path, tasks: list[Task], max_tasks: int | None, only: 
         command.extend(["--max-tasks", str(max_tasks)])
     if only:
         command.extend(["--task", only])
+    if dangerous:
+        command.append("--dangerous")
     env = os.environ.copy()
     package_root = str(Path(__file__).resolve().parent.parent)
     env["PYTHONPATH"] = os.pathsep.join(part for part in (package_root, env.get("PYTHONPATH", "")) if part)
@@ -254,6 +263,8 @@ def _build_parser() -> argparse.ArgumentParser:
         if command == "run":
             item.add_argument("--max-tasks", type=int)
             item.add_argument("--task", help="run one PLAN_ID/TASK_ID")
+            item.add_argument("--dangerous", action="store_true",
+                              help="run Codex without approvals or sandboxing; use only in a trusted environment")
             mode = item.add_mutually_exclusive_group()
             mode.add_argument("--background", action="store_true", help="run detached and write progress to a log")
             mode.add_argument("--foreground", action="store_true", help="stream progress in this terminal (default)")
@@ -279,8 +290,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "run":
             if args.background:
-                return _run_background(root, tasks, args.max_tasks, args.task)
-            return _run(root, tasks, config, args.max_tasks, args.task, args._background_ready)
+                return _run_background(root, tasks, args.max_tasks, args.task, args.dangerous)
+            return _run(root, tasks, config, args.max_tasks, args.task, args._background_ready, args.dangerous)
         if args.command in ("retry", "accept", "reconcile"):
             with run_lock(root):
                 state = _state(root, tasks, recover=True)
@@ -310,6 +321,11 @@ def main(argv: list[str] | None = None) -> int:
                 for attempt in state.attempt_rows(args.task_key):
                     session = f" session={attempt['session_id']}" if attempt["session_id"] else ""
                     print(f"attempt {attempt['id']}: {attempt['status'] or 'running'}{session} {attempt['run_dir']}")
+                    run_dir = Path(attempt["run_dir"])
+                    if run_dir.is_dir():
+                        logs = sorted(path.name for path in run_dir.iterdir() if path.is_file())
+                        if logs:
+                            print("  files: " + ", ".join(logs))
                 return 0
             data = _status_data(tasks, state)
             if args.command == "status" and args.json:

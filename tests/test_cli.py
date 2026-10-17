@@ -10,6 +10,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
@@ -86,17 +87,33 @@ class CliTests(unittest.TestCase):
 
     def test_run_streams_progress_and_checks_in_foreground(self):
         self.plan([self.checked("visible")])
+        self.fake.write_text(FAKE_CODEX + '\npathlib.Path("codex-argv.json").write_text(json.dumps(args))\n')
         code, out, err = self.call("run", "--project", str(self.root))
         self.assertEqual((code, err), (0, ""))
         self.assertIn("[codex] session fake-thread", out)
         self.assertIn("[check 1] ok", out)
         self.assertIn("feature/visible: done", out)
+        argv = json.loads((self.root / "codex-argv.json").read_text())
+        self.assertEqual(argv[argv.index("--sandbox") + 1], "workspace-write")
+        self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", argv)
+
+    def test_dangerous_run_passes_bypass_to_codex(self):
+        self.plan([self.checked("unattended")])
+        self.fake.write_text(FAKE_CODEX + '\npathlib.Path("codex-argv.json").write_text(json.dumps(args))\n')
+        code, _, err = self.call("run", "--project", str(self.root), "--dangerous")
+        self.assertEqual((code, err), (0, ""))
+        argv = json.loads((self.root / "codex-argv.json").read_text())
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", argv)
+        self.assertNotIn("--sandbox", argv)
+        runs = list((self.root / ".codex-tasks/runs").iterdir())
+        self.assertEqual(json.loads((runs[0] / "invocation.json").read_text())["permissions"], "dangerous")
 
     def test_background_run_writes_progress_and_finishes(self):
         self.plan([self.checked("background")])
         self.fake.write_text(FAKE_CODEX.replace("import sys\n", "import sys\nimport time\n")
-                             .replace("prompt = sys.stdin.read()", "prompt = sys.stdin.read()\ntime.sleep(0.6)"))
-        code, out, err = self.call("run", "--project", str(self.root), "--background")
+                             .replace("prompt = sys.stdin.read()", "prompt = sys.stdin.read()\ntime.sleep(0.6)")
+                             + '\npathlib.Path("codex-argv.json").write_text(json.dumps(args))\n')
+        code, out, err = self.call("run", "--project", str(self.root), "--background", "--dangerous")
         self.assertEqual((code, err), (0, ""))
         self.assertIn("background run started", out)
         logs = list((self.root / ".codex-tasks" / "background").glob("*.log"))
@@ -107,6 +124,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(self.status()["counts"], {"done": 1})
         self.assertIn("[codex] session fake-thread", logs[0].read_text())
         self.assertIn("[check 1] ok", logs[0].read_text())
+        argv = json.loads((self.root / "codex-argv.json").read_text())
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", argv)
 
     def test_explicit_foreground_run(self):
         self.plan([self.checked("visible")])
@@ -185,6 +204,21 @@ class CliTests(unittest.TestCase):
         runs = list((self.root / ".codex-tasks" / "runs").iterdir())
         self.assertEqual(len(runs), 1)
         self.assertTrue((runs[0] / "check-1.err").exists())
+
+    def test_runner_exception_keeps_traceback_and_attempt_history(self):
+        self.plan([self.checked("broken")])
+        with patch("codex_task.cli.execute", side_effect=RuntimeError("unexpected failure")):
+            self.assertEqual(self.call("run", "--project", str(self.root))[0], 1)
+        self.assertEqual(self.status()["counts"], {"failed": 1})
+        code, output, _ = self.call("show", "feature/broken", "--project", str(self.root))
+        self.assertEqual(code, 0)
+        self.assertIn("runner-error.log", output)
+        runs = list((self.root / ".codex-tasks" / "runs").iterdir())
+        self.assertEqual(len(runs), 1)
+        self.assertIn("RuntimeError: unexpected failure", (runs[0] / "runner-error.log").read_text())
+        self.assertEqual(self.call("retry", "feature/broken", "--project", str(self.root))[0], 0)
+        self.assertEqual(self.call("run", "--project", str(self.root))[0], 0)
+        self.assertEqual(len(list((self.root / ".codex-tasks" / "runs").iterdir())), 2)
 
     def test_missing_artifact_fails_and_shell_requires_opt_in(self):
         self.plan([{"id": "artifact", "title": "Artifact", "objective": "artifact", "acceptance": ["exists"],

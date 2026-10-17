@@ -51,6 +51,8 @@ Each `run` invocation executes eligible tasks serially. A previously `blocked` t
 
 `run` stays in the foreground by default and streams Codex progress, command output, and check output to the terminal. Use `--foreground` to select this explicitly, or `--background` to return to the shell while a detached runner continues. The background command prints its PID and log path; follow that log with `tail -f PATH` and query task state with `status`. Press Ctrl-C to interrupt a foreground task. Only one runner can work in a project at a time.
 
+For an unattended run that needs permissions beyond the configured sandbox, use `run --dangerous` (also works with `--background`). This follows the Framemind runner's explicit opt-in and passes `--dangerously-bypass-approvals-and-sandbox` to each child `codex exec`. The child then has no Codex approval prompts or Codex sandbox. Use it only for a trusted project in an environment where that full access is acceptable. It cannot remove restrictions imposed by a parent Codex session or an external sandbox; launch the runner from your own shell if those restrictions would block the work.
+
 ## How it works
 
 ```mermaid
@@ -66,7 +68,7 @@ flowchart LR
     Q["status / show / retry / reconcile"] <--> R
 ```
 
-Plans are definitions, not a progress ledger. The runner selects tasks whose dependencies are complete, asks Codex to work in the target project, checks its structured completion result, verifies listed artifacts and optional check commands, then saves the attempt and status locally in SQLite. SQLite is part of Python and needs no database server. Run logs stay in `.codex-tasks/runs/`; both logs and the state database are ignored by Git. `status --json` exposes progress to other scripts.
+Plans are definitions, not a progress ledger. The runner selects tasks whose dependencies are complete, asks Codex to work in the target project, checks its structured completion result, verifies listed artifacts and optional check commands, then saves the attempt and status locally in SQLite. SQLite is part of Python and needs no database server. Each attempt gets its own directory under `.codex-tasks/runs/` with the prompt, invocation and permission mode (`invocation.json`), raw Codex events (`events.jsonl`), stderr, structured result, and check output. Runner exceptions also leave a `runner-error.log` traceback. `show PLAN_ID/TASK_ID` lists every attempt directory and its files, including earlier retries. Background runs additionally save the terminal progress stream under `.codex-tasks/background/`. These logs and the state database are ignored by Git. `status --json` exposes progress to other scripts.
 
 `acceptance` tells Codex and reviewers what success means; it is not automatically proven by the runner. Use `artifacts` and `checks` for outcomes that can be verified mechanically. The runner does not automatically commit, push, deploy, or write to external services.
 
@@ -111,6 +113,7 @@ Run these from the target project's root:
 | `python3 .codex-tasks/run.py run` | Run in the foreground with live output until no task is runnable or one needs attention. |
 | `python3 .codex-tasks/run.py run --foreground` | Explicitly select foreground execution. |
 | `python3 .codex-tasks/run.py run --background` | Run detached; print PID and `.codex-tasks/background/*.log` path. |
+| `python3 .codex-tasks/run.py run --background --dangerous` | Run unattended without child Codex approvals or sandboxing. |
 | `python3 .codex-tasks/run.py run --max-tasks 2` | Run at most two tasks in this invocation. |
 | `python3 .codex-tasks/run.py run --task onboarding/draft` | Run one eligible task. |
 | `python3 .codex-tasks/run.py show onboarding/draft` | Show status, attempts, and log locations. |

@@ -30,7 +30,8 @@ class PortableKitTests(unittest.TestCase):
                 'prompt = sys.stdin.read()\n'
                 'pathlib.Path("one.txt" if "Objective: first" in prompt else "two.txt").write_text("done")\n'
                 'path = pathlib.Path(sys.argv[sys.argv.index("--output-last-message") + 1])\n'
-                'path.write_text(json.dumps({"status": "completed", "summary": "done", "evidence": ["file written"]}))\n',
+                'path.write_text(json.dumps({"status": "completed", "summary": "done", "evidence": ["file written"]}))\n'
+                'pathlib.Path("codex-argv.json").write_text(json.dumps(sys.argv))\n',
                 encoding="utf-8")
             fake.chmod(0o755)
             config_path = project / ".codex-tasks/project.json"
@@ -64,7 +65,7 @@ class PortableKitTests(unittest.TestCase):
 
             plan["tasks"].append({"id": "three", "title": "Third", "objective": "third", "acceptance": ["finished"]})
             (project / ".codex-tasks/plans/work.json").write_text(json.dumps(plan))
-            launched = call("run", "--background", "--task", "portable/three")
+            launched = call("run", "--background", "--dangerous", "--task", "portable/three")
             self.assertEqual(launched.returncode, 0, launched.stderr)
             self.assertIn("background run started", launched.stdout)
             deadline = time.monotonic() + 5
@@ -77,6 +78,8 @@ class PortableKitTests(unittest.TestCase):
             logs = list((project / ".codex-tasks/background").glob("*.log"))
             self.assertEqual(len(logs), 1)
             self.assertIn("portable/three: done", logs[0].read_text())
+            self.assertIn("--dangerously-bypass-approvals-and-sandbox",
+                          json.loads((project / "codex-argv.json").read_text()))
 
 
 if __name__ == "__main__":

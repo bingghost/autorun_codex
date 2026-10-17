@@ -27,4 +27,8 @@ python3 .codex-tasks/run.py show plan-id/task-id
 
 `run` 默认前台实时显示 Codex 和检查输出；`--foreground` 可显式指定前台，`--background` 则脱离终端运行并打印 PID、日志路径。用 `tail -f 日志路径` 跟踪后台输出，用 `status` 查询状态。前台按 Ctrl-C 可中断当前任务。同一项目同一时间只允许一个执行器运行。
 
+无人值守且需要沙箱外权限时，显式使用 `run --dangerous`，可与 `--background` 组合。该参数让子 Codex CLI 使用 `--dangerously-bypass-approvals-and-sandbox`；仅用于可信项目和允许完全访问的环境。它不能解除启动本脚本的上层沙箱限制，因此需要完整系统权限时应从自己的终端启动脚本。
+
+每次尝试都会新建 `.codex-tasks/runs/` 目录，保留 `invocation.json`（含权限模式）、`events.jsonl`、`stderr.log`、结果和检查日志；运行器自身异常另存 `runner-error.log`。`show plan-id/task-id` 列出该任务所有历史尝试目录及其中的文件，重试不会覆盖旧日志。
+
 交接时报告：已完成/待执行/失败或阻塞的任务键、验证证据、需要人工判断的事项，以及下一条可运行命令。不要仅凭 Codex 的文字总结宣称项目完成；以任务验收和最终项目检查为准。

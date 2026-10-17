@@ -128,18 +128,26 @@ def _invoke(argv: list[str], *, cwd: Path, input_text: str | None, timeout: int,
 
 
 def execute(root: Path, task: Task, config: dict, run_dir: Path,
-            *, stream_output: bool = False) -> tuple[str, str, int | None, dict | None, list[dict]]:
+            *, stream_output: bool = False, dangerous: bool = False) -> tuple[str, str, int | None, dict | None, list[dict]]:
     run_dir.mkdir(parents=True, exist_ok=False)
     prompt = prompt_for(task)
     (run_dir / "prompt.txt").write_text(prompt, encoding="utf-8")
     (run_dir / "schema.json").write_text(json.dumps(RESULT_SCHEMA, indent=2), encoding="utf-8")
-    argv = [config["codex_bin"], "exec", "--json", "--sandbox", config["sandbox"], "--output-schema", str(run_dir / "schema.json"),
+    argv = [config["codex_bin"], "exec", "--json", "--output-schema", str(run_dir / "schema.json"),
             "--output-last-message", str(run_dir / "result.json"), "--cd", str(root)]
+    if dangerous:
+        argv.append("--dangerously-bypass-approvals-and-sandbox")
+    else:
+        argv.extend(["--sandbox", config["sandbox"]])
     if config["model"]:
         argv.extend(["--model", config["model"]])
     if config["skip_git_repo_check"]:
         argv.append("--skip-git-repo-check")
     argv.append("-")
+    (run_dir / "invocation.json").write_text(json.dumps({
+        "permissions": "dangerous" if dangerous else config["sandbox"],
+        "codex_argv": argv,
+    }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     exit_code, error = _invoke(argv, cwd=root, input_text=prompt, timeout=config["timeout_seconds"],
                                stdout_path=run_dir / "events.jsonl", stderr_path=run_dir / "stderr.log",
                                on_stdout=_codex_progress if stream_output else None,
