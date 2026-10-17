@@ -1,0 +1,22 @@
+version: 1
+plan:
+  id: sample-research
+  title: 示例资料整理目标
+tasks:
+  - id: gather
+    title: 整理本地资料
+    objective: 汇总项目内指定资料中的事实与出处
+    context:
+      - docs/source.md
+    acceptance:
+      - 每项结论能追溯到来源
+    artifacts:
+      - docs/findings.md
+  - id: review
+    title: 校对结论
+    objective: 核对汇总文档与原始资料并修正错误
+    depends_on: [gather]
+    context:
+      - docs/source.md
+    acceptance:
+      - 结论准确、没有遗漏关键限制

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "plan": {"id": "sample-feature", "title": "示例开发目标"},
+  "tasks": [
+    {
+      "id": "implement",
+      "title": "实现功能",
+      "objective": "按项目需求实现一个明确的小功能",
+      "acceptance": ["功能行为符合需求", "相关测试通过"],
+      "checks": [{"argv": ["python3", "-m", "unittest", "discover", "-s", "tests"]}]
+    },
+    {
+      "id": "document",
+      "title": "补充使用文档",
+      "objective": "记录该功能的使用方式与限制",
+      "depends_on": ["implement"],
+      "acceptance": ["文档与实际行为一致"],
+      "artifacts": ["docs/feature.md"]
+    }
+  ]
+}

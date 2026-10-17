@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "codex_bin": "codex",
+  "model": null,
+  "sandbox": "workspace-write",
+  "timeout_seconds": 3600,
+  "check_timeout_seconds": 300,
+  "allow_shell_checks": false,
+  "require_review_without_checks": false,
+  "skip_git_repo_check": false
+}
