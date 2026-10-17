@@ -30,6 +30,7 @@ def prompt_for(task: Task) -> str:
         f"Task: {task.key} — {task.title}",
         f"Objective: {task.objective}",
         "Work independently within the project. Read AGENTS.md if present. Do not launch another Codex instance.",
+        "Do not commit or push. The outer task runner owns Git operations after validation.",
         "If blocked, report the blocker. Do not claim completion without doing the work.",
     ]
     if task.instructions:
@@ -124,11 +125,13 @@ def _invoke(argv: list[str], *, cwd: Path, input_text: str | None, timeout: int,
         finally:
             for reader in readers:
                 reader.join()
+            process.stdout.close()
+            process.stderr.close()
         return process.returncode, None
 
 
 def execute(root: Path, task: Task, config: dict, run_dir: Path,
-            *, stream_output: bool = False, dangerous: bool = False) -> tuple[str, str, int | None, dict | None, list[dict]]:
+            *, stream_output: bool = False, dangerous: bool = True) -> tuple[str, str, int | None, dict | None, list[dict]]:
     run_dir.mkdir(parents=True, exist_ok=False)
     prompt = prompt_for(task)
     (run_dir / "prompt.txt").write_text(prompt, encoding="utf-8")

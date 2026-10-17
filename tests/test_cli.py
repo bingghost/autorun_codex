@@ -41,7 +41,7 @@ class CliTests(unittest.TestCase):
         self.fake.chmod(0o755)
         self.config = self.root / ".codex-tasks" / "project.yaml"
         config = yaml.safe_load(self.config.read_text())
-        config.update(codex_bin=str(self.fake), skip_git_repo_check=True)
+        config.update(codex_bin=str(self.fake), skip_git_repo_check=True, auto_commit=False, auto_push=False)
         self.config.write_text(yaml.safe_dump(config))
 
     def call(self, *args):
@@ -94,8 +94,8 @@ class CliTests(unittest.TestCase):
         self.assertIn("[check 1] ok", out)
         self.assertIn("feature/visible: done", out)
         argv = json.loads((self.root / "codex-argv.json").read_text())
-        self.assertEqual(argv[argv.index("--sandbox") + 1], "workspace-write")
-        self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", argv)
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", argv)
+        self.assertNotIn("--sandbox", argv)
 
     def test_dangerous_run_passes_bypass_to_codex(self):
         self.plan([self.checked("unattended")])
@@ -108,12 +108,61 @@ class CliTests(unittest.TestCase):
         runs = list((self.root / ".codex-tasks/runs").iterdir())
         self.assertEqual(json.loads((runs[0] / "invocation.json").read_text())["permissions"], "dangerous")
 
+    def test_sandboxed_run_uses_configured_sandbox(self):
+        self.plan([self.checked("restricted")])
+        self.fake.write_text(FAKE_CODEX + '\npathlib.Path("codex-argv.json").write_text(json.dumps(args))\n')
+        code, _, err = self.call("run", "--project", str(self.root), "--sandboxed")
+        self.assertEqual((code, err), (0, ""))
+        argv = json.loads((self.root / "codex-argv.json").read_text())
+        self.assertEqual(argv[argv.index("--sandbox") + 1], "workspace-write")
+        self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", argv)
+        runs = list((self.root / ".codex-tasks/runs").iterdir())
+        self.assertEqual(json.loads((runs[0] / "invocation.json").read_text())["permissions"], "workspace-write")
+
+    def test_completed_task_is_committed_and_pushed(self):
+        remote_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(remote_temp.cleanup)
+        remote = Path(remote_temp.name) / "remote.git"
+        subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True, text=True)
+        subprocess.run(["git", "init", "-b", "main"], cwd=self.root, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "config", "user.name", "Task Runner Test"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.email", "runner@example.test"], cwd=self.root, check=True)
+        config = yaml.safe_load(self.config.read_text())
+        config.update(auto_commit=True, auto_push=True, git_remote="origin", git_branch="main")
+        self.config.write_text(yaml.safe_dump(config))
+        self.plan([{"id": "ship", "title": "Ship change", "objective": "ship", "acceptance": ["output exists"],
+                    "artifacts": ["output.txt"]}])
+        self.fake.write_text(FAKE_CODEX + '\npathlib.Path("output.txt").write_text("done")\n')
+        subprocess.run(["git", "add", "-A"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-m", "Initial fixture"], cwd=self.root, check=True,
+                       capture_output=True, text=True)
+        subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=self.root, check=True)
+        subprocess.run(["git", "push", "origin", "HEAD:main"], cwd=self.root, check=True,
+                       capture_output=True, text=True)
+
+        code, output, err = self.call("run", "--project", str(self.root))
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("committed feature/ship", output)
+        self.assertIn("pushed feature/ship to origin", output)
+        subject = subprocess.run(["git", "log", "-1", "--pretty=%s"], cwd=self.root, check=True,
+                                 capture_output=True, text=True).stdout.strip()
+        self.assertEqual(subject, "task: [feature/ship] Ship change")
+        local_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.root, check=True,
+                                    capture_output=True, text=True).stdout.strip()
+        remote_head = subprocess.run(["git", "--git-dir", str(remote), "rev-parse", "refs/heads/main"],
+                                     check=True, capture_output=True, text=True).stdout.strip()
+        self.assertEqual(remote_head, local_head)
+        self.assertEqual(subprocess.run(["git", "status", "--porcelain"], cwd=self.root, check=True,
+                                        capture_output=True, text=True).stdout, "")
+        runs = list((self.root / ".codex-tasks/runs").iterdir())
+        self.assertIn("commit:", (runs[0] / "git.log").read_text())
+
     def test_background_run_writes_progress_and_finishes(self):
         self.plan([self.checked("background")])
         self.fake.write_text(FAKE_CODEX.replace("import sys\n", "import sys\nimport time\n")
                              .replace("prompt = sys.stdin.read()", "prompt = sys.stdin.read()\ntime.sleep(0.6)")
                              + '\npathlib.Path("codex-argv.json").write_text(json.dumps(args))\n')
-        code, out, err = self.call("run", "--project", str(self.root), "--background", "--dangerous")
+        code, out, err = self.call("run", "--project", str(self.root), "--background")
         self.assertEqual((code, err), (0, ""))
         self.assertIn("background run started", out)
         logs = list((self.root / ".codex-tasks" / "background").glob("*.log"))

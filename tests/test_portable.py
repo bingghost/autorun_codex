@@ -36,7 +36,7 @@ class PortableKitTests(unittest.TestCase):
             fake.chmod(0o755)
             config_path = project / ".codex-tasks/project.json"
             config = json.loads(config_path.read_text())
-            config.update(codex_bin=str(fake), skip_git_repo_check=True)
+            config.update(codex_bin=str(fake), skip_git_repo_check=True, auto_commit=False, auto_push=False)
             config_path.write_text(json.dumps(config))
             plan = {"version": 1, "plan": {"id": "portable", "title": "Portable test"}, "tasks": [
                 {"id": "one", "title": "First", "objective": "first", "acceptance": ["one.txt exists"],
@@ -65,7 +65,7 @@ class PortableKitTests(unittest.TestCase):
 
             plan["tasks"].append({"id": "three", "title": "Third", "objective": "third", "acceptance": ["finished"]})
             (project / ".codex-tasks/plans/work.json").write_text(json.dumps(plan))
-            launched = call("run", "--background", "--dangerous", "--task", "portable/three")
+            launched = call("run", "--background", "--task", "portable/three")
             self.assertEqual(launched.returncode, 0, launched.stderr)
             self.assertIn("background run started", launched.stdout)
             deadline = time.monotonic() + 5

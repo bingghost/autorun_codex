@@ -2,14 +2,14 @@
 
 ## 集成
 
-复制本工具包的 `.codex-tasks/` 和 `.agents/` 到项目根目录。项目已有 `AGENTS.md` 时沿用，不覆盖。`project.json` 是项目配置；非 Git 项目把 `skip_git_repo_check` 设为 `true`。`plans/` 存放可提交的任务定义；`state.sqlite`、`runs/` 和 `background/` 是本地运行记录，由 `.gitignore` 排除。升级工具时保留项目配置、计划和状态；先在副本中验证新版工具。
+复制本工具包的 `.codex-tasks/` 和 `.agents/` 到项目根目录。项目已有 `AGENTS.md` 时沿用，不覆盖。`project.json` 是项目配置；非 Git 项目把 `skip_git_repo_check` 设为 `true`，并把 `auto_commit`、`auto_push` 设为 `false`。`plans/` 存放可提交的任务定义；`state.sqlite`、`runs/` 和 `background/` 是本地运行记录，由 `.gitignore` 排除。升级工具时保留项目配置、计划和状态；先在副本中验证新版工具。
 
 ## 从目标到计划
 
 1. 先读需求、`AGENTS.md`、相关源码或资料，明确可交付结果与约束。
 2. 按可独立交付和验证的边界拆任务。一个任务应能在一次 Codex 运行中完成；过大的任务继续拆，已有结果用 `depends_on` 串起来。依赖仅能引用同一计划内的 ID。
 3. 每个任务写清 `objective`（结果）、`acceptance`（可判断的完成条件）。`context` 只列必需且已存在的项目相对路径；`artifacts` 列预期生成的文件。可自动验证的任务写 `checks`，使用 `argv` 参数数组。
-4. 任务保持项目中立：开发、文档、研究整理、本地数据处理均用同一结构。检查命令和内容由目标项目决定。不可把密钥写进计划，也不可把提交、推送或外部写入设为默认动作。
+4. 任务保持项目中立：开发、文档、研究整理、本地数据处理均用同一结构。检查命令和内容由目标项目决定。不可把密钥写进计划，也不要要求子 Codex 自行提交或推送；外层运行器统一处理 Git。
 
 文件名使用 `.json` 时只需 Python 标准库；`.yaml` 或 `.yml` 需要 PyYAML。计划示例见 `examples/`。`version: 1`，计划 ID 与任务 ID 使用小写字母、数字和连字符，任务键为 `计划ID/任务ID`。各计划的 `plan.id` 必须唯一。计划是定义文件，任务状态由运行器记录，不在计划中手工改状态。
 
@@ -27,8 +27,10 @@ python3 .codex-tasks/run.py show plan-id/task-id
 
 `run` 默认前台实时显示 Codex 和检查输出；`--foreground` 可显式指定前台，`--background` 则脱离终端运行并打印 PID、日志路径。用 `tail -f 日志路径` 跟踪后台输出，用 `status` 查询状态。前台按 Ctrl-C 可中断当前任务。同一项目同一时间只允许一个执行器运行。
 
-无人值守且需要沙箱外权限时，显式使用 `run --dangerous`，可与 `--background` 组合。该参数让子 Codex CLI 使用 `--dangerously-bypass-approvals-and-sandbox`；仅用于可信项目和允许完全访问的环境。它不能解除启动本脚本的上层沙箱限制，因此需要完整系统权限时应从自己的终端启动脚本。
+`run` 默认让子 Codex CLI 使用 `--dangerously-bypass-approvals-and-sandbox`，不请求审批且不使用沙箱；`--dangerous` 可显式指定此模式。需要受限运行时使用 `run --sandboxed`，采用 `project.json` 配置的沙箱；两个模式都可与 `--background` 组合。默认模式只用于可信项目和允许完全访问的环境。它不能解除启动本脚本的上层沙箱限制，因此需要完整系统权限时应从自己的终端启动脚本。
 
 每次尝试都会新建 `.codex-tasks/runs/` 目录，保留 `invocation.json`（含权限模式）、`events.jsonl`、`stderr.log`、结果和检查日志；运行器自身异常另存 `runner-error.log`。`show plan-id/task-id` 列出该任务所有历史尝试目录及其中的文件，重试不会覆盖旧日志。
+
+任务验收通过后，运行器默认执行 `git add -A`，为该任务创建独立 commit，并 push 到 `git_remote`。启动前工作区必须干净。可通过 `auto_commit`、`auto_push`、`git_remote`、`git_branch` 和 `commit_prefix` 调整；非 Git 项目把 `auto_commit` 与 `auto_push` 都设为 `false`。
 
 交接时报告：已完成/待执行/失败或阻塞的任务键、验证证据、需要人工判断的事项，以及下一条可运行命令。不要仅凭 Codex 的文字总结宣称项目完成；以任务验收和最终项目检查为准。

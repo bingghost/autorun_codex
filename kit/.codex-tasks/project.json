@@ -7,5 +7,10 @@
   "check_timeout_seconds": 300,
   "allow_shell_checks": false,
   "require_review_without_checks": false,
-  "skip_git_repo_check": false
+  "skip_git_repo_check": false,
+  "auto_commit": true,
+  "auto_push": true,
+  "git_remote": "origin",
+  "git_branch": null,
+  "commit_prefix": "task"
 }

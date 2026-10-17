@@ -149,14 +149,66 @@ def _last_event_type(run_dir: Path) -> str | None:
     return None
 
 
+def _git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(["git", *args], cwd=root, text=True, capture_output=True)
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise PlanError(f"git {' '.join(args)} failed: {detail}")
+    return result
+
+
+def _prepare_git(root: Path, config: dict) -> None:
+    if not config["auto_commit"]:
+        return
+    _git(root, "rev-parse", "--show-toplevel")
+    dirty = _git(root, "status", "--porcelain", "--untracked-files=all").stdout.strip()
+    if dirty:
+        raise PlanError("automatic commits require a clean worktree before run; commit or stash existing changes")
+
+
+def _push(root: Path, config: dict) -> str:
+    branch = config["git_branch"] or _git(root, "branch", "--show-current").stdout.strip()
+    if not branch:
+        raise PlanError("cannot push detached HEAD; set git_branch in project config")
+    result = _git(root, "push", config["git_remote"], f"HEAD:{branch}")
+    return result.stderr.strip() or result.stdout.strip()
+
+
+def _commit_task(root: Path, task: Task, summary: str, config: dict, run_dir: Path) -> tuple[str | None, str | None]:
+    if not config["auto_commit"]:
+        return None, None
+    _git(root, "add", "-A")
+    subject = f"{config['commit_prefix']}: [{task.key}] {task.title}"
+    subject = " ".join(subject.splitlines())[:72].rstrip()
+    body = f"{summary.strip()}\n\nTask-ID: {task.key}"
+    commit = _git(root, "commit", "--allow-empty", "-m", subject, "-m", body)
+    commit_hash = _git(root, "rev-parse", "HEAD").stdout.strip()
+    lines = [commit.stdout.strip(), f"commit: {commit_hash}"]
+    push_error = None
+    if config["auto_push"]:
+        try:
+            lines.append("push: " + _push(root, config))
+        except PlanError as exc:
+            push_error = str(exc)
+            lines.append("push error: " + push_error)
+    (run_dir / "git.log").write_text("\n".join(line for line in lines if line) + "\n", encoding="utf-8")
+    print(f"committed {task.key}: {commit_hash[:12]}", flush=True)
+    if config["auto_push"] and push_error is None:
+        print(f"pushed {task.key} to {config['git_remote']}", flush=True)
+    return commit_hash, push_error
+
+
 def _run(root: Path, tasks: list[Task], config: dict, max_tasks: int | None, only: str | None,
-         ready_path: Path | None = None, dangerous: bool = False) -> int:
+         ready_path: Path | None = None, dangerous: bool = True) -> int:
     if max_tasks is not None and max_tasks <= 0:
         raise PlanError("--max-tasks must be positive")
     by_key = {task.key: task for task in tasks}
     if only and only not in by_key:
         raise PlanError(f"unknown task: {only}")
     with run_lock(root):
+        _prepare_git(root, config)
+        if config["auto_push"]:
+            _push(root, config)
         state = _state(root, tasks, recover=True)
         try:
             if ready_path is not None:
@@ -192,10 +244,19 @@ def _run(root: Path, tasks: list[Task], config: dict, max_tasks: int | None, onl
                     run_dir.mkdir(parents=True, exist_ok=True)
                     (run_dir / "runner-error.log").write_text(traceback.format_exc(), encoding="utf-8")
                     status, summary, exit_code, result, checks = "failed", f"runner error: {exc}; see runner-error.log", None, None, []
+                push_error = None
+                if status == "done":
+                    try:
+                        _, push_error = _commit_task(root, task, summary, config, run_dir)
+                    except (PlanError, OSError) as exc:
+                        status, summary = "failed", f"Git finalization failed: {exc}"
                 state.finish(attempt_id, task, status, summary, exit_code, result, checks, _session_id(run_dir))
                 print(f"{task.key}: {status} — {summary}", flush=True)
                 launched += 1
                 if status != "done":
+                    return 1
+                if push_error:
+                    print(f"{task.key}: done locally but push failed — {push_error}", file=sys.stderr, flush=True)
                     return 1
                 if only:
                     break
@@ -205,7 +266,7 @@ def _run(root: Path, tasks: list[Task], config: dict, max_tasks: int | None, onl
 
 
 def _run_background(root: Path, tasks: list[Task], max_tasks: int | None, only: str | None,
-                    dangerous: bool = False) -> int:
+                    dangerous: bool = True) -> int:
     if max_tasks is not None and max_tasks <= 0:
         raise PlanError("--max-tasks must be positive")
     if only and only not in {task.key for task in tasks}:
@@ -225,6 +286,8 @@ def _run_background(root: Path, tasks: list[Task], max_tasks: int | None, only: 
         command.extend(["--task", only])
     if dangerous:
         command.append("--dangerous")
+    else:
+        command.append("--sandboxed")
     env = os.environ.copy()
     package_root = str(Path(__file__).resolve().parent.parent)
     env["PYTHONPATH"] = os.pathsep.join(part for part in (package_root, env.get("PYTHONPATH", "")) if part)
@@ -263,8 +326,11 @@ def _build_parser() -> argparse.ArgumentParser:
         if command == "run":
             item.add_argument("--max-tasks", type=int)
             item.add_argument("--task", help="run one PLAN_ID/TASK_ID")
-            item.add_argument("--dangerous", action="store_true",
-                              help="run Codex without approvals or sandboxing; use only in a trusted environment")
+            permissions = item.add_mutually_exclusive_group()
+            permissions.add_argument("--dangerous", dest="dangerous", action="store_true", default=True,
+                                     help="run Codex without approvals or sandboxing (default)")
+            permissions.add_argument("--sandboxed", dest="dangerous", action="store_false",
+                                     help="use the project's configured Codex sandbox")
             mode = item.add_mutually_exclusive_group()
             mode.add_argument("--background", action="store_true", help="run detached and write progress to a log")
             mode.add_argument("--foreground", action="store_true", help="stream progress in this terminal (default)")
@@ -299,7 +365,22 @@ def main(argv: list[str] | None = None) -> int:
                     if args.command == "retry":
                         state.retry(args.task_key)
                     elif args.command == "accept":
+                        task = next((item for item in tasks if item.key == args.task_key), None)
+                        if task is None:
+                            raise PlanError(f"unknown task: {args.task_key}")
+                        row = state.rows()[args.task_key]
+                        if row["status"] != "needs_review":
+                            raise PlanError(f"{args.task_key}: only needs_review tasks can be accepted")
+                        attempt = state.latest_attempt(args.task_key)
+                        if attempt is None:
+                            raise PlanError(f"{args.task_key}: no attempt to accept")
+                        _, push_error = _commit_task(root, task, "accepted after review", config,
+                                                     Path(attempt["run_dir"]))
                         state.accept(args.task_key)
+                        if push_error:
+                            print(f"{args.task_key}: accepted locally but push failed — {push_error}",
+                                  file=sys.stderr)
+                            return 1
                     else:
                         print("reset: " + ", ".join(state.reconcile(args.task_key, tasks)))
                     return 0

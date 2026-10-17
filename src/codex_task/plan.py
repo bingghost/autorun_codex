@@ -26,6 +26,11 @@ DEFAULT_CONFIG = {
     "allow_shell_checks": False,
     "require_review_without_checks": False,
     "skip_git_repo_check": False,
+    "auto_commit": True,
+    "auto_push": True,
+    "git_remote": "origin",
+    "git_branch": None,
+    "commit_prefix": "task",
 }
 
 
@@ -121,13 +126,20 @@ def load_config(root: Path) -> dict:
     for key in ("timeout_seconds", "check_timeout_seconds"):
         if type(config[key]) is not int or config[key] <= 0:
             raise PlanError(f"{key} must be a positive integer")
-    for key in ("allow_shell_checks", "require_review_without_checks", "skip_git_repo_check"):
+    for key in ("allow_shell_checks", "require_review_without_checks", "skip_git_repo_check", "auto_commit", "auto_push"):
         if type(config[key]) is not bool:
             raise PlanError(f"{key} must be true or false")
+    if config["auto_push"] and not config["auto_commit"]:
+        raise PlanError("auto_push requires auto_commit")
     if not isinstance(config["codex_bin"], str) or not config["codex_bin"].strip():
         raise PlanError("codex_bin must be a command path")
     if config["model"] is not None and (not isinstance(config["model"], str) or not config["model"].strip()):
         raise PlanError("model must be a nonempty string or null")
+    for key in ("git_remote", "commit_prefix"):
+        if not isinstance(config[key], str) or not config[key].strip():
+            raise PlanError(f"{key} must be a nonempty string")
+    if config["git_branch"] is not None and (not isinstance(config["git_branch"], str) or not config["git_branch"].strip()):
+        raise PlanError("git_branch must be a nonempty string or null")
     return config
 
 

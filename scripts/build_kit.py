@@ -40,7 +40,8 @@ def main() -> None:
         "version": 1, "codex_bin": "codex", "model": None, "sandbox": "workspace-write",
         "timeout_seconds": 3600, "check_timeout_seconds": 300,
         "allow_shell_checks": False, "require_review_without_checks": False,
-        "skip_git_repo_check": False,
+        "skip_git_repo_check": False, "auto_commit": True, "auto_push": True,
+        "git_remote": "origin", "git_branch": None, "commit_prefix": "task",
     }
     (TOOL / "project.json").write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (TOOL / ".gitignore").write_text("state.sqlite*\nrun.lock\nruns/\nbackground/\n__pycache__/\n", encoding="utf-8")

@@ -23,7 +23,7 @@ python3 .codex-tasks/run.py run --max-tasks 2
 python3 .codex-tasks/run.py status
 ```
 
-项目级 skill 位于 `.agents/skills/codex-task-planner/SKILL.md`。可以调用 `$codex-task-planner` 让 Codex 拆解目标，也可以自己编写计划。`.codex-tasks/examples/` 提供开发和非开发任务示例；执行前先复制并改写到 `plans/`。非 Git 项目需在 `.codex-tasks/project.json` 中设置 `skip_git_repo_check: true`。
+项目级 skill 位于 `.agents/skills/codex-task-planner/SKILL.md`。可以调用 `$codex-task-planner` 让 Codex 拆解目标，也可以自己编写计划。`.codex-tasks/examples/` 提供开发和非开发任务示例；执行前先复制并改写到 `plans/`。非 Git 项目需在 `.codex-tasks/project.json` 中设置 `skip_git_repo_check: true`、`auto_commit: false` 和 `auto_push: false`。
 
 ## 工作流程
 
@@ -37,7 +37,8 @@ flowchart TD
     F -- "pending 或 blocked，且依赖已完成" --> G["交给 Codex 执行一个任务"]
     F -- "没有" --> H["查看状态和剩余工作"]
     G --> I{"结果和检查"}
-    I -- "done" --> E
+    I -- "done" --> M["提交并推送当前任务"]
+    M --> E
     I -- "blocked" --> J["停止；下次运行重试一次"]
     I -- "failed 或 interrupted" --> K["查看日志、修复原因，再 retry"]
     I -- "needs_review" --> L["人工审阅，再 accept"]
@@ -51,7 +52,7 @@ flowchart TD
 
 `run` 默认留在前台，实时显示 Codex 进度、命令输出和检查输出。也可显式指定 `--foreground`；使用 `--background` 才会脱离终端继续运行。后台命令会打印进程 PID 和日志路径，可用 `tail -f 日志路径` 持续查看，并用 `status` 查询任务状态。前台按 Ctrl-C 可中断当前任务。同一项目同一时间只能运行一个任务执行器。
 
-需要无人值守且任务必须使用沙箱外权限时，可显式运行 `run --dangerous`，并可与 `--background` 组合。它沿用 Framemind 脚本的选择方式，给每个子 `codex exec` 传入 `--dangerously-bypass-approvals-and-sandbox`，因此子 Codex 不再请求审批，也不受 Codex 自身沙箱限制。此模式只适合可信项目和允许完全访问的运行环境。它不能解除启动脚本的上层 Codex 会话或外部沙箱的限制；若上层有限制，应从自己的系统终端启动脚本。
+`run` 现在默认给每个子 `codex exec` 传入 `--dangerously-bypass-approvals-and-sandbox`，子任务不再请求 Codex 审批，也不受 Codex 自身沙箱限制。`--dangerous` 可显式指定这个默认模式；需要使用 `.codex-tasks/project.json` 或 `project.yaml` 配置的沙箱时，改用 `run --sandboxed`，并可与 `--background` 组合。默认模式让子 Codex 完全访问本机，因此只适合可信项目和运行环境。它不能解除启动脚本的上层 Codex 会话或外部沙箱限制；若上层有限制，应从自己的系统终端启动脚本。
 
 ## 工作原理
 
@@ -63,14 +64,26 @@ flowchart LR
     X -->|"结构化结果"| R
     R --> V["检查预期文件和可选命令"]
     V --> R
+    R --> G["每个完成任务独立 commit 并 push"]
     R --> S[("state.sqlite：任务与尝试记录")]
     R --> L["runs/：提示、事件、结果和检查日志"]
     Q["status / show / retry / reconcile"] <--> R
 ```
 
-计划文件只定义任务，不保存执行状态。运行器选择依赖已完成的任务，让 Codex 在目标项目中工作，读取结构化完成结果，验证预期产物和可选检查命令，再把尝试记录和状态写入本地 SQLite。SQLite 随 Python 提供，无需数据库服务。每次尝试在 `.codex-tasks/runs/` 下有独立目录，保存提示词、调用参数和权限模式（`invocation.json`）、原始 Codex 事件（`events.jsonl`）、错误输出、结构化结果和检查输出。运行器自身异常还会保存 `runner-error.log` 堆栈。`show 计划ID/任务ID` 列出所有历史尝试目录及文件；后台运行另在 `.codex-tasks/background/` 保存终端进度日志。日志和状态数据库均被 Git 忽略。其他脚本可以读取 `status --json` 的结果。
+计划文件只定义任务，不保存执行状态。运行器选择依赖已完成的任务，让 Codex 在目标项目中工作，读取结构化完成结果，验证预期产物和可选检查命令，再把尝试记录和状态写入本地 SQLite。SQLite 随 Python 提供，无需数据库服务。每次尝试在 `.codex-tasks/runs/` 下有独立目录，保存提示词、调用参数和权限模式（`invocation.json`）、原始 Codex 事件（`events.jsonl`）、错误输出、结构化结果、检查输出和 Git 收尾结果（`git.log`）。运行器自身异常还会保存 `runner-error.log` 堆栈。`show 计划ID/任务ID` 列出所有历史尝试目录及文件；后台运行另在 `.codex-tasks/background/` 保存终端进度日志。日志和状态数据库均被 Git 忽略。其他脚本可以读取 `status --json` 的结果。
 
-`acceptance` 告诉 Codex 和审阅者什么算完成；运行器不会自动证明这些文字条件。能机械验证的结果应写入 `artifacts` 和 `checks`。运行器不会自动提交、推送、部署或写入外部服务。
+`acceptance` 告诉 Codex 和审阅者什么算完成；运行器不会自动证明这些文字条件。能机械验证的结果应写入 `artifacts` 和 `checks`。任务通过后，运行器默认为每个任务创建一个 Git commit 并立即 push。启动时要求工作区干净，避免把已有人工修改混进任务提交。可在 `project.json` 或 `project.yaml` 中配置 `auto_commit`、`auto_push`、`git_remote`、`git_branch` 和 `commit_prefix`；非 Git 项目需同时关闭两个自动选项。部署和其他外部写入仍不由运行器处理。
+
+主要项目配置如下：
+
+| 配置 | 默认值 | 含义 |
+| --- | --- | --- |
+| `auto_commit` | `true` | 每个完成任务创建一个独立提交。 |
+| `auto_push` | `true` | 每次提交后立即推送；必须同时启用 `auto_commit`。 |
+| `git_remote` | `origin` | 自动推送使用的远程仓库。 |
+| `git_branch` | `null` | 推送到当前分支；设置分支名可覆盖。 |
+| `commit_prefix` | `task` | 自动生成提交标题的前缀。 |
+| `sandbox` | `workspace-write` | 仅在使用 `run --sandboxed` 时生效。 |
 
 ## 计划格式
 
@@ -112,8 +125,8 @@ flowchart LR
 | `python3 .codex-tasks/run.py status --json` | 以 JSON 查询任务进度。 |
 | `python3 .codex-tasks/run.py run` | 默认前台实时输出，执行到没有可运行任务或遇到需要处理的任务。 |
 | `python3 .codex-tasks/run.py run --foreground` | 显式选择前台运行。 |
-| `python3 .codex-tasks/run.py run --background` | 后台运行，打印 PID 和 `.codex-tasks/background/*.log` 路径。 |
-| `python3 .codex-tasks/run.py run --background --dangerous` | 无人值守运行，子 Codex 不请求审批且不使用沙箱。 |
+| `python3 .codex-tasks/run.py run --background` | 后台无人值守运行，打印 PID 和 `.codex-tasks/background/*.log` 路径。 |
+| `python3 .codex-tasks/run.py run --sandboxed` | 改用项目配置的 Codex 沙箱。 |
 | `python3 .codex-tasks/run.py run --max-tasks 2` | 本轮最多执行两个任务。 |
 | `python3 .codex-tasks/run.py run --task onboarding/draft` | 只执行一个符合条件的任务。 |
 | `python3 .codex-tasks/run.py show onboarding/draft` | 查看状态、尝试记录和日志位置。 |
