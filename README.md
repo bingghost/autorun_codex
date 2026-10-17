@@ -2,7 +2,7 @@
 
 [简体中文 README](README.zh-CN.md)
 
-Codex Task Runner turns a larger goal into a queue of small, independently executable tasks. A project-local Python script reads JSON or YAML plans, runs one task at a time through Codex CLI, records progress, and resumes work across invocations. Copy the tool and its planning skill into a project; no local API or background service is required.
+Codex Task Runner turns a larger goal into a queue of small, independently executable tasks. A project-local Python script reads JSON or YAML plans, runs one task at a time through Codex CLI, records progress, and resumes work across invocations. Copy the tool and its planning skill into a project; no local API or service is required.
 
 ## Quick start
 
@@ -48,6 +48,8 @@ flowchart TD
 ```
 
 Each `run` invocation executes eligible tasks serially. A previously `blocked` task has priority over independent `pending` tasks and is attempted once in the new invocation. If it is still blocked, the runner stops again. `failed` and `interrupted` tasks require an explicit `retry`; a task requiring human review needs `accept`. Editing a completed task marks that task and completed dependents as `changed`; pending dependents wait for their dependencies. Use `reconcile` when you intend to rerun the changed task and its dependents.
+
+`run` stays in the foreground by default and streams Codex progress, command output, and check output to the terminal. Use `--foreground` to select this explicitly, or `--background` to return to the shell while a detached runner continues. The background command prints its PID and log path; follow that log with `tail -f PATH` and query task state with `status`. Press Ctrl-C to interrupt a foreground task. Only one runner can work in a project at a time.
 
 ## How it works
 
@@ -106,7 +108,9 @@ Run these from the target project's root:
 | --- | --- |
 | `python3 .codex-tasks/run.py validate` | Validate configuration, plans, paths, and dependencies. |
 | `python3 .codex-tasks/run.py status --json` | Query task status in a machine-readable form. |
-| `python3 .codex-tasks/run.py run` | Continue until no task is runnable or one needs attention. |
+| `python3 .codex-tasks/run.py run` | Run in the foreground with live output until no task is runnable or one needs attention. |
+| `python3 .codex-tasks/run.py run --foreground` | Explicitly select foreground execution. |
+| `python3 .codex-tasks/run.py run --background` | Run detached; print PID and `.codex-tasks/background/*.log` path. |
 | `python3 .codex-tasks/run.py run --max-tasks 2` | Run at most two tasks in this invocation. |
 | `python3 .codex-tasks/run.py run --task onboarding/draft` | Run one eligible task. |
 | `python3 .codex-tasks/run.py show onboarding/draft` | Show status, attempts, and log locations. |

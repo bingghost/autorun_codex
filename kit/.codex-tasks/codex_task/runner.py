@@ -6,7 +6,9 @@ import json
 import os
 import signal
 import subprocess
+import threading
 from pathlib import Path
+from typing import Callable
 
 from .plan import Task, artifact_path
 
@@ -40,33 +42,93 @@ def prompt_for(task: Task) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _codex_progress(line: str) -> None:
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        print(line, flush=True)
+        return
+    if not isinstance(event, dict):
+        print(line, flush=True)
+        return
+    event_type = event.get("type", "event")
+    item = event.get("item") if isinstance(event.get("item"), dict) else {}
+    kind = item.get("type")
+    if event_type == "thread.started":
+        print(f"[codex] session {event.get('thread_id', '')}", flush=True)
+    elif event_type == "turn.started":
+        print("[codex] working...", flush=True)
+    elif event_type == "item.started" and kind == "command_execution":
+        print(f"[codex] $ {item.get('command', '')}", flush=True)
+    elif event_type == "item.completed" and kind == "command_execution":
+        output = item.get("aggregated_output")
+        if isinstance(output, str) and output.strip():
+            print(output.rstrip(), flush=True)
+        print(f"[codex] command exit {item.get('exit_code', '?')}", flush=True)
+    elif event_type == "item.completed" and kind == "agent_message":
+        message = item.get("text")
+        if isinstance(message, str) and message.strip():
+            print(message.rstrip(), flush=True)
+    elif event_type in ("turn.completed", "turn.failed", "error"):
+        detail = event.get("message")
+        print(f"[codex] {event_type}" + (f": {detail}" if isinstance(detail, str) else ""), flush=True)
+    elif event_type in ("item.started", "item.completed") and kind:
+        print(f"[codex] {kind}: {event_type.split('.')[1]}", flush=True)
+
+
 def _invoke(argv: list[str], *, cwd: Path, input_text: str | None, timeout: int,
-            stdout_path: Path, stderr_path: Path, shell: bool = False) -> tuple[int | None, str | None]:
+            stdout_path: Path, stderr_path: Path, shell: bool = False,
+            on_stdout: Callable[[str], None] | None = None,
+            on_stderr: Callable[[str], None] | None = None) -> tuple[int | None, str | None]:
     with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
         try:
             process = subprocess.Popen(argv if not shell else argv[0], cwd=cwd, stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
-                                       stdout=stdout, stderr=stderr, text=True, start_new_session=True, shell=shell)
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace",
+                                       bufsize=1, start_new_session=True, shell=shell)
         except OSError as exc:
             stderr.write(str(exc) + "\n")
             return None, str(exc)
+
+        def copy_lines(source, target, callback: Callable[[str], None] | None) -> None:
+            for line in source:
+                target.write(line)
+                target.flush()
+                if callback:
+                    callback(line.rstrip("\r\n"))
+
+        readers = [threading.Thread(target=copy_lines, args=(process.stdout, stdout, on_stdout)),
+                   threading.Thread(target=copy_lines, args=(process.stderr, stderr, on_stderr))]
+        for reader in readers:
+            reader.start()
         try:
-            process.communicate(input=input_text, timeout=timeout)
+            if input_text is not None:
+                try:
+                    process.stdin.write(input_text)
+                except BrokenPipeError:
+                    pass
+                finally:
+                    process.stdin.close()
+            process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             os.killpg(process.pid, signal.SIGTERM)
             try:
-                process.communicate(timeout=5)
+                process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
-                process.communicate()
+                process.wait()
             return process.returncode, f"timed out after {timeout}s"
         except KeyboardInterrupt:
             os.killpg(process.pid, signal.SIGTERM)
-            process.communicate()
+            process.wait()
             raise
+        finally:
+            for reader in readers:
+                reader.join()
         return process.returncode, None
 
 
-def execute(root: Path, task: Task, config: dict, run_dir: Path) -> tuple[str, str, int | None, dict | None, list[dict]]:
+def execute(root: Path, task: Task, config: dict, run_dir: Path,
+            *, stream_output: bool = False) -> tuple[str, str, int | None, dict | None, list[dict]]:
     run_dir.mkdir(parents=True, exist_ok=False)
     prompt = prompt_for(task)
     (run_dir / "prompt.txt").write_text(prompt, encoding="utf-8")
@@ -79,7 +141,9 @@ def execute(root: Path, task: Task, config: dict, run_dir: Path) -> tuple[str, s
         argv.append("--skip-git-repo-check")
     argv.append("-")
     exit_code, error = _invoke(argv, cwd=root, input_text=prompt, timeout=config["timeout_seconds"],
-                               stdout_path=run_dir / "events.jsonl", stderr_path=run_dir / "stderr.log")
+                               stdout_path=run_dir / "events.jsonl", stderr_path=run_dir / "stderr.log",
+                               on_stdout=_codex_progress if stream_output else None,
+                               on_stderr=(lambda line: print(f"[codex stderr] {line}", flush=True)) if stream_output else None)
     if error:
         return "failed", error, exit_code, None, []
     if exit_code != 0:
@@ -99,7 +163,9 @@ def execute(root: Path, task: Task, config: dict, run_dir: Path) -> tuple[str, s
         is_shell = "shell" in check
         command = [check["shell"]] if is_shell else check["argv"]
         check_code, check_error = _invoke(command, cwd=root, input_text=None, timeout=config["check_timeout_seconds"],
-                                          stdout_path=run_dir / f"check-{index}.out", stderr_path=run_dir / f"check-{index}.err", shell=is_shell)
+                                          stdout_path=run_dir / f"check-{index}.out", stderr_path=run_dir / f"check-{index}.err", shell=is_shell,
+                                          on_stdout=(lambda line: print(f"[check {index}] {line}", flush=True)) if stream_output else None,
+                                          on_stderr=(lambda line: print(f"[check {index} stderr] {line}", flush=True)) if stream_output else None)
         checks.append({"command": command, "exit_code": check_code, "error": check_error})
         if check_error or check_code != 0:
             return "failed", f"check {index} failed; see check-{index}.out and check-{index}.err", exit_code, result, checks

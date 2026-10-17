@@ -18,6 +18,8 @@ def main() -> None:
     (TOOL / "run.lock").unlink(missing_ok=True)
     if (TOOL / "runs").exists():
         shutil.rmtree(TOOL / "runs")
+    if (TOOL / "background").exists():
+        shutil.rmtree(TOOL / "background")
     package = TOOL / "codex_task"
     package.mkdir(parents=True, exist_ok=True)
     for name in ("__init__.py", "cli.py", "plan.py", "runner.py", "state.py"):
@@ -41,7 +43,7 @@ def main() -> None:
         "skip_git_repo_check": False,
     }
     (TOOL / "project.json").write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    (TOOL / ".gitignore").write_text("state.sqlite*\nrun.lock\nruns/\n__pycache__/\n", encoding="utf-8")
+    (TOOL / ".gitignore").write_text("state.sqlite*\nrun.lock\nruns/\nbackground/\n__pycache__/\n", encoding="utf-8")
     (TOOL / "plans").mkdir(exist_ok=True)
     (TOOL / "plans" / ".gitkeep").touch()
 

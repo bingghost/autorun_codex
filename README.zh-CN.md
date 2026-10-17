@@ -2,7 +2,7 @@
 
 [English README](README.md)
 
-Codex 任务运行器把较大的目标拆成可以独立执行的小任务。项目内的 Python 脚本读取 JSON 或 YAML 计划，逐个调用 Codex CLI，记录进度，并在下次启动时继续执行。只需把工具和规划 skill 复制到目标项目；不需要本地 API 或后台服务。
+Codex 任务运行器把较大的目标拆成可以独立执行的小任务。项目内的 Python 脚本读取 JSON 或 YAML 计划，逐个调用 Codex CLI，记录进度，并在下次启动时继续执行。只需把工具和规划 skill 复制到目标项目；不需要本地 API 或服务。
 
 ## 快速开始
 
@@ -48,6 +48,8 @@ flowchart TD
 ```
 
 每次 `run` 都串行执行可运行的任务。上次处于 `blocked` 的任务优先于独立的 `pending` 任务，并在新一轮运行中尝试一次；若仍阻塞，就再次停止。`failed` 和 `interrupted` 需要显式执行 `retry`；等待人工验收的任务需要 `accept`。修改已完成任务的定义后，该任务和已完成的下游任务会进入 `changed`，尚未执行的下游任务继续等待依赖；确认要重跑时执行 `reconcile`。
+
+`run` 默认留在前台，实时显示 Codex 进度、命令输出和检查输出。也可显式指定 `--foreground`；使用 `--background` 才会脱离终端继续运行。后台命令会打印进程 PID 和日志路径，可用 `tail -f 日志路径` 持续查看，并用 `status` 查询任务状态。前台按 Ctrl-C 可中断当前任务。同一项目同一时间只能运行一个任务执行器。
 
 ## 工作原理
 
@@ -106,7 +108,9 @@ flowchart LR
 | --- | --- |
 | `python3 .codex-tasks/run.py validate` | 校验配置、计划、路径和依赖。 |
 | `python3 .codex-tasks/run.py status --json` | 以 JSON 查询任务进度。 |
-| `python3 .codex-tasks/run.py run` | 执行到没有可运行任务或遇到需要处理的任务。 |
+| `python3 .codex-tasks/run.py run` | 默认前台实时输出，执行到没有可运行任务或遇到需要处理的任务。 |
+| `python3 .codex-tasks/run.py run --foreground` | 显式选择前台运行。 |
+| `python3 .codex-tasks/run.py run --background` | 后台运行，打印 PID 和 `.codex-tasks/background/*.log` 路径。 |
 | `python3 .codex-tasks/run.py run --max-tasks 2` | 本轮最多执行两个任务。 |
 | `python3 .codex-tasks/run.py run --task onboarding/draft` | 只执行一个符合条件的任务。 |
 | `python3 .codex-tasks/run.py show onboarding/draft` | 查看状态、尝试记录和日志位置。 |

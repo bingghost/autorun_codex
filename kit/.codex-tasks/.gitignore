@@ -1,4 +1,5 @@
 state.sqlite*
 run.lock
 runs/
+background/
 __pycache__/

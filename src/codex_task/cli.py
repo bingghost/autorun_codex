@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
 import sys
+import threading
+import time
 import uuid
 from importlib.resources import files
 from pathlib import Path
@@ -28,7 +32,7 @@ def init(root: Path) -> None:
         config_path.write_text(content, encoding="utf-8")
     ignore = folder / ".gitignore"
     if not ignore.exists():
-        ignore.write_text("state.sqlite*\nrun.lock\nruns/\n", encoding="utf-8")
+        ignore.write_text("state.sqlite*\nrun.lock\nruns/\nbackground/\n", encoding="utf-8")
     keep = plans / ".gitkeep"
     if not keep.exists():
         keep.touch()
@@ -144,7 +148,8 @@ def _last_event_type(run_dir: Path) -> str | None:
     return None
 
 
-def _run(root: Path, tasks: list[Task], config: dict, max_tasks: int | None, only: str | None) -> int:
+def _run(root: Path, tasks: list[Task], config: dict, max_tasks: int | None, only: str | None,
+         ready_path: Path | None = None) -> int:
     if max_tasks is not None and max_tasks <= 0:
         raise PlanError("--max-tasks must be positive")
     by_key = {task.key: task for task in tasks}
@@ -153,6 +158,8 @@ def _run(root: Path, tasks: list[Task], config: dict, max_tasks: int | None, onl
     with run_lock(root):
         state = _state(root, tasks, recover=True)
         try:
+            if ready_path is not None:
+                ready_path.touch()
             launched = 0
             while max_tasks is None or launched < max_tasks:
                 rows = state.rows()
@@ -172,7 +179,7 @@ def _run(root: Path, tasks: list[Task], config: dict, max_tasks: int | None, onl
                 attempt_id = state.start(task, run_dir)
                 print(f"running {task.key}", flush=True)
                 try:
-                    status, summary, exit_code, result, checks = execute(root, task, config, run_dir)
+                    status, summary, exit_code, result, checks = execute(root, task, config, run_dir, stream_output=True)
                 except KeyboardInterrupt:
                     state.finish(attempt_id, task, "interrupted", "interrupted by user", None, None, [])
                     print(f"interrupted {task.key}", file=sys.stderr)
@@ -191,6 +198,47 @@ def _run(root: Path, tasks: list[Task], config: dict, max_tasks: int | None, onl
             state.close()
 
 
+def _run_background(root: Path, tasks: list[Task], max_tasks: int | None, only: str | None) -> int:
+    if max_tasks is not None and max_tasks <= 0:
+        raise PlanError("--max-tasks must be positive")
+    if only and only not in {task.key for task in tasks}:
+        raise PlanError(f"unknown task: {only}")
+    with run_lock(root):
+        pass
+    folder = root / ".codex-tasks" / "background"
+    folder.mkdir(parents=True, exist_ok=True)
+    run_id = f"{now().replace(':', '-')}-{uuid.uuid4().hex[:8]}"
+    log_path = folder / f"{run_id}.log"
+    ready_path = folder / f"{run_id}.ready"
+    command = [sys.executable, "-m", "codex_task.cli", "run", "--foreground", "--project", str(root),
+               "--_background-ready", str(ready_path)]
+    if max_tasks is not None:
+        command.extend(["--max-tasks", str(max_tasks)])
+    if only:
+        command.extend(["--task", only])
+    env = os.environ.copy()
+    package_root = str(Path(__file__).resolve().parent.parent)
+    env["PYTHONPATH"] = os.pathsep.join(part for part in (package_root, env.get("PYTHONPATH", "")) if part)
+    with log_path.open("w", encoding="utf-8") as log:
+        process = subprocess.Popen(command, cwd=root, stdin=subprocess.DEVNULL, stdout=log,
+                                   stderr=subprocess.STDOUT, start_new_session=True, env=env)
+    for _ in range(200):
+        if ready_path.exists():
+            ready_path.unlink(missing_ok=True)
+            threading.Thread(target=process.wait, daemon=True).start()
+            print(f"background run started (pid {process.pid}); log: {log_path}")
+            return 0
+        if process.poll() is not None:
+            break
+        time.sleep(0.05)
+    detail = log_path.read_text(encoding="utf-8", errors="replace").strip()
+    if process.poll() is None:
+        process.terminate()
+        process.wait(timeout=5)
+        raise PlanError(f"background runner did not become ready; inspect {log_path}")
+    raise PlanError(f"background runner exited before starting: {detail or log_path}")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="codex-task", description="Run JSON or YAML tasks with Codex")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -206,6 +254,10 @@ def _build_parser() -> argparse.ArgumentParser:
         if command == "run":
             item.add_argument("--max-tasks", type=int)
             item.add_argument("--task", help="run one PLAN_ID/TASK_ID")
+            mode = item.add_mutually_exclusive_group()
+            mode.add_argument("--background", action="store_true", help="run detached and write progress to a log")
+            mode.add_argument("--foreground", action="store_true", help="stream progress in this terminal (default)")
+            item.add_argument("--_background-ready", type=Path, help=argparse.SUPPRESS)
         if command == "status":
             item.add_argument("--json", action="store_true")
     return parser
@@ -226,7 +278,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"valid: {len(tasks)} tasks in {root}")
             return 0
         if args.command == "run":
-            return _run(root, tasks, config, args.max_tasks, args.task)
+            if args.background:
+                return _run_background(root, tasks, args.max_tasks, args.task)
+            return _run(root, tasks, config, args.max_tasks, args.task, args._background_ready)
         if args.command in ("retry", "accept", "reconcile"):
             with run_lock(root):
                 state = _state(root, tasks, recover=True)

@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -60,6 +61,22 @@ class PortableKitTests(unittest.TestCase):
                                        capture_output=True, text=True)
             self.assertEqual(reinstall.returncode, 0, reinstall.stderr)
             self.assertEqual(json.loads(config_path.read_text())["codex_bin"], str(fake))
+
+            plan["tasks"].append({"id": "three", "title": "Third", "objective": "third", "acceptance": ["finished"]})
+            (project / ".codex-tasks/plans/work.json").write_text(json.dumps(plan))
+            launched = call("run", "--background", "--task", "portable/three")
+            self.assertEqual(launched.returncode, 0, launched.stderr)
+            self.assertIn("background run started", launched.stdout)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                status = json.loads(call("status", "--json").stdout)
+                if status["counts"] == {"done": 3}:
+                    break
+                time.sleep(0.05)
+            self.assertEqual(status["counts"], {"done": 3})
+            logs = list((project / ".codex-tasks/background").glob("*.log"))
+            self.assertEqual(len(logs), 1)
+            self.assertIn("portable/three: done", logs[0].read_text())
 
 
 if __name__ == "__main__":

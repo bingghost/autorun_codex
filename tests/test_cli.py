@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -82,6 +83,36 @@ class CliTests(unittest.TestCase):
         self.assertEqual(conn.execute("SELECT count(*) FROM attempts").fetchone()[0], 4)
         self.assertEqual(conn.execute("SELECT session_id FROM attempts LIMIT 1").fetchone()[0], "fake-thread")
         conn.close()
+
+    def test_run_streams_progress_and_checks_in_foreground(self):
+        self.plan([self.checked("visible")])
+        code, out, err = self.call("run", "--project", str(self.root))
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("[codex] session fake-thread", out)
+        self.assertIn("[check 1] ok", out)
+        self.assertIn("feature/visible: done", out)
+
+    def test_background_run_writes_progress_and_finishes(self):
+        self.plan([self.checked("background")])
+        self.fake.write_text(FAKE_CODEX.replace("import sys\n", "import sys\nimport time\n")
+                             .replace("prompt = sys.stdin.read()", "prompt = sys.stdin.read()\ntime.sleep(0.6)"))
+        code, out, err = self.call("run", "--project", str(self.root), "--background")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("background run started", out)
+        logs = list((self.root / ".codex-tasks" / "background").glob("*.log"))
+        self.assertEqual(len(logs), 1)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and self.status()["counts"] != {"done": 1}:
+            time.sleep(0.05)
+        self.assertEqual(self.status()["counts"], {"done": 1})
+        self.assertIn("[codex] session fake-thread", logs[0].read_text())
+        self.assertIn("[check 1] ok", logs[0].read_text())
+
+    def test_explicit_foreground_run(self):
+        self.plan([self.checked("visible")])
+        code, out, err = self.call("run", "--project", str(self.root), "--foreground")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("[codex] session fake-thread", out)
 
     def test_review_and_accept(self):
         config = yaml.safe_load(self.config.read_text())

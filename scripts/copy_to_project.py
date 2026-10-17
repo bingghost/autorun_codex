@@ -20,7 +20,8 @@ def main() -> int:
     conflicts = []
     files = [p for folder in (KIT / ".codex-tasks", KIT / ".agents")
              for p in folder.rglob("*") if p.is_file() and "__pycache__" not in p.parts
-             and "runs" not in p.relative_to(KIT).parts and p.suffix != ".pyc"
+             and "runs" not in p.relative_to(KIT).parts and "background" not in p.relative_to(KIT).parts
+             and p.suffix != ".pyc"
              and not p.name.startswith("state.sqlite") and p.name != "run.lock"]
     for source in files:
         dest = project / source.relative_to(KIT)
